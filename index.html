@@ -2,10 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <!-- PWA Meta Tags -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Human Tracker Pro - Gyro Edition</title>
+  <meta name="theme-color" content="#121212" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="https://upload.wikimedia.org/wikipedia/commons/thumb/d/d0/Radar_icon.svg/192px-Radar_icon.svg.png" />
   
-  <!-- Leaflet CSS for GPS -->
+  <title>Human Tracker Pro</title>
+  
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 
   <style>
@@ -15,6 +21,8 @@
       font-family: sans-serif; overflow: hidden;
       display: flex; flex-direction: column;
       align-items: center; justify-content: center; height: 100vh;
+      /* Prevent pull-to-refresh on mobile */
+      overscroll-behavior-y: contain; 
     }
     
     #controls {
@@ -46,7 +54,6 @@
     video#webcam { display: none; }
     canvas#output { width: 100%; height: 100%; object-fit: cover; }
 
-    /* Local Camera Radar */
     #radarCanvas {
       position: absolute; bottom: 20px; left: 20px;
       width: 140px; height: 140px; border-radius: 50%;
@@ -55,7 +62,6 @@
       background: rgba(0, 20, 0, 0.7);
     }
 
-    /* GPS Minimap */
     #minimap {
       position: absolute; bottom: 20px; right: 20px;
       width: 140px; height: 140px; border-radius: 15px;
@@ -63,7 +69,6 @@
       box-shadow: 0 4px 10px rgba(0,0,0,0.5); background: #222;
     }
 
-    /* Playback Modal */
     #playbackModal {
       display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
       background: rgba(0, 0, 0, 0.9); z-index: 20; flex-direction: column;
@@ -127,37 +132,34 @@
     let recordedChunks = [];
     let isRecording = false;
 
-    // Gyroscope & Compass Data
     let sensorsEnabled = false;
-    let deviceAlpha = 0; // Compass Heading (0-360)
-    let deviceBeta = 0;  // Pitch (Front-to-back tilt)
-    let deviceGamma = 0; // Roll (Left-to-right tilt)
+    let deviceAlpha = 0; 
+    let deviceBeta = 0;  
+    let deviceGamma = 0; 
 
-    // ==========================================
-    // 0. SENSORS (GYRO & COMPASS)
-    // ==========================================
+    // PWA Service Worker Registration
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js')
+          .then(reg => console.log('Service Worker Registered'))
+          .catch(err => console.error('Service Worker Error', err));
+      });
+    }
+
     sensorBtn.addEventListener('click', async () => {
-      // iOS 13+ requires explicit permission via user interaction
       if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
         try {
           const permission = await DeviceOrientationEvent.requestPermission();
-          if (permission === 'granted') {
-            enableSensors();
-          } else {
-            alert("Permission denied to access device sensors.");
-          }
-        } catch (err) {
-          console.error("Sensor permission error:", err);
-        }
+          if (permission === 'granted') enableSensors();
+          else alert("Permission denied to access device sensors.");
+        } catch (err) { console.error("Sensor permission error:", err); }
       } else {
-        // Android / Non-iOS 13+ handles it without explicit promise request
         enableSensors();
       }
     });
 
     function enableSensors() {
       window.addEventListener('deviceorientation', (event) => {
-        // Prefer webkitCompassHeading for true north on iOS, fallback to alpha
         deviceAlpha = event.webkitCompassHeading || event.alpha || 0;
         deviceBeta = event.beta || 0;
         deviceGamma = event.gamma || 0;
@@ -169,18 +171,13 @@
 
     async function requestWakeLock() {
       try {
-        if ('wakeLock' in navigator) {
-          wakeLock = await navigator.wakeLock.request('screen');
-        }
-      } catch (err) { console.warn(`Wake Lock error: ${err.message}`); }
+        if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
+      } catch (err) { console.warn(err); }
     }
     document.addEventListener('visibilitychange', async () => {
       if (wakeLock !== null && document.visibilityState === 'visible') await requestWakeLock();
     });
 
-    // ==========================================
-    // 1. CAMERA LOGIC
-    // ==========================================
     async function getCameras() {
       try {
         const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -192,7 +189,7 @@
           d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('environment')
         );
         if (backCameraIndex !== -1) currentDeviceIndex = backCameraIndex;
-      } catch (e) { console.error("Camera enumeration error:", e); }
+      } catch (e) { console.error(e); }
     }
 
     async function startStream(deviceIndex) {
@@ -232,7 +229,7 @@
             }
           } catch(err) { torchBtn.innerText = '🔦 Torch: N/A'; }
         }, 500);
-      } catch (e) { console.error("Camera error: ", e); } finally { isSwitchingCamera = false; }
+      } catch (e) { console.error(e); } finally { isSwitchingCamera = false; }
     }
 
     document.getElementById('switchLensBtn').addEventListener('click', async () => {
@@ -256,9 +253,6 @@
       } catch (err) { console.error(err); }
     });
 
-    // ==========================================
-    // 2. RADAR & HUD DRAWING
-    // ==========================================
     let sweepAngle = 0;
     const MAX_RADAR_DISTANCE_METERS = 10; 
     const HUMAN_HEIGHT_METERS = 1.7; 
@@ -271,7 +265,6 @@
       
       radarCtx.clearRect(0, 0, w, h);
       
-      // Radar Rings
       radarCtx.strokeStyle = 'rgba(0, 255, 204, 0.3)';
       radarCtx.lineWidth = 1;
       for (let i = 1; i <= 3; i++) {
@@ -280,10 +273,7 @@
         radarCtx.stroke();
       }
 
-      // Compass Heading Indicator on Radar (Draws an 'N' where North is)
       if (sensorsEnabled) {
-        // Adjust for phone orientation: standard alpha is 0 at North.
-        // We subtract 90 deg (PI/2) because Canvas 0 is at 3 o'clock.
         const northAngle = (270 - deviceAlpha) * (Math.PI / 180); 
         const nX = cx + Math.cos(northAngle) * (cx - 15);
         const nY = cy + Math.sin(northAngle) * (cy - 15);
@@ -295,14 +285,12 @@
         radarCtx.fillText('N', nX, nY);
       }
       
-      // Crosshairs
       radarCtx.beginPath();
       radarCtx.moveTo(cx, 0); radarCtx.lineTo(cx, h);
       radarCtx.moveTo(0, cy); radarCtx.lineTo(w, cy);
       radarCtx.strokeStyle = 'rgba(0, 255, 204, 0.3)';
       radarCtx.stroke();
 
-      // Sweeper
       sweepAngle = (sweepAngle + 0.05) % (Math.PI * 2);
       radarCtx.beginPath();
       radarCtx.moveTo(cx, cy);
@@ -311,7 +299,6 @@
       radarCtx.lineWidth = 2;
       radarCtx.stroke();
 
-      // Plot Humans
       predictions.forEach(p => {
         if (p.class === 'person' && p.score > 0.4) {
           const [boxX, boxY, boxWidth, boxHeight] = p.bbox;
@@ -320,7 +307,7 @@
           if (distance > MAX_RADAR_DISTANCE_METERS) distance = MAX_RADAR_DISTANCE_METERS;
 
           const offsetX = (boxX + boxWidth / 2) - (canvas.width / 2);
-          const angle = Math.atan2(offsetX, focalLength) - (Math.PI / 2); // Rotate to start at top
+          const angle = Math.atan2(offsetX, focalLength) - (Math.PI / 2); 
 
           const pixelsPerMeter = (h / 2) / MAX_RADAR_DISTANCE_METERS;
           const plotX = cx + (Math.cos(angle) * (distance * pixelsPerMeter));
@@ -354,24 +341,19 @@
       ctx.shadowColor = '#000';
       ctx.shadowBlur = 4;
       
-      // Top Left Stats (Pitch, Roll, Heading)
       ctx.fillText(`HDG: ${Math.round(deviceAlpha).toString().padStart(3, '0')}°`, 20, 80);
       ctx.fillText(`PIT: ${Math.round(deviceBeta)}°`, 20, 105);
       ctx.fillText(`ROL: ${Math.round(deviceGamma)}°`, 20, 130);
 
-      // Moving Crosshair / Artificial Horizon
-      // Shift crosshair based on how you tilt the phone
       const pitchOffset = (deviceBeta / 90) * (canvas.height / 2);
       let rollOffset = (deviceGamma / 90) * (canvas.width / 2);
       
-      // Clamp values so it doesn't leave the screen entirely
       const crossX = Math.max(50, Math.min(canvas.width - 50, cx + rollOffset));
       const crossY = Math.max(50, Math.min(canvas.height - 50, cy + pitchOffset));
 
-      ctx.strokeStyle = 'rgba(153, 51, 255, 0.8)'; // Purple to match gyro button
+      ctx.strokeStyle = 'rgba(153, 51, 255, 0.8)'; 
       ctx.lineWidth = 2;
       
-      // Draw dynamic crosshair
       ctx.beginPath();
       ctx.moveTo(crossX - 30, crossY); ctx.lineTo(crossX - 10, crossY);
       ctx.moveTo(crossX + 10, crossY); ctx.lineTo(crossX + 30, crossY);
@@ -379,7 +361,6 @@
       ctx.moveTo(crossX, crossY + 10); ctx.lineTo(crossX, crossY + 30);
       ctx.stroke();
 
-      // Center fixed reticle
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
       ctx.beginPath();
       ctx.arc(cx, cy, 5, 0, Math.PI*2);
@@ -388,9 +369,6 @@
       ctx.restore();
     }
 
-    // ==========================================
-    // 3. MAIN DETECTION LOOP
-    // ==========================================
     async function detectFrame() {
       if (!isSwitchingCamera && video.readyState === 4 && video.videoWidth > 0 && video.videoHeight > 0) {
         if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
@@ -399,8 +377,6 @@
         }
 
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-        // Draw HUD underneath bounding boxes
         drawTacticalHUD();
 
         if (model) {
@@ -428,15 +404,12 @@
                 ctx.fillText(text, x + 5, y > 25 ? y - 8 : y + 16);
               }
             });
-          } catch(err) { console.warn("Detection skipped", err); }
+          } catch(err) {}
         }
       }
       requestAnimationFrame(detectFrame);
     }
 
-    // ==========================================
-    // 4. GPS & RECORDING
-    // ==========================================
     function initGPS() {
       if (!("geolocation" in navigator)) return;
       let map, pathLine, init = false;
@@ -488,9 +461,6 @@
       document.getElementById('recordedVideo').pause();
     });
 
-    // ==========================================
-    // 5. INIT APP
-    // ==========================================
     async function init() {
       try {
         await requestWakeLock();
