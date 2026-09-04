@@ -8,14 +8,10 @@
   "orientation": "portrait",
   "icons": [
     {
-      "src": "https://cdn-icons-png.flaticon.com/512/861/861506.png",
-      "sizes": "192x192",
-      "type": "image/png"
-    },
-    {
-      "src": "https://cdn-icons-png.flaticon.com/512/861/861506.png",
+      "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='512' height='512' viewBox='0 0 512 512'><rect width='512' height='512' fill='%23121212'/><circle cx='256' cy='256' r='180' stroke='%2300ffcc' stroke-width='20' fill='none'/><circle cx='256' cy='256' r='100' stroke='%2300ffcc' stroke-width='10' fill='none'/><line x1='256' y1='30' x2='256' y2='482' stroke='%2300ffcc' stroke-width='20'/><line x1='30' y1='256' x2='482' y2='256' stroke='%2300ffcc' stroke-width='20'/></svg>",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
     }
   ]
 }
