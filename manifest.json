@@ -1,19 +1,19 @@
 {
   "name": "Human Tracker Pro",
   "short_name": "Tracker Pro",
-  "start_url": "./index.html",
+  "start_url": ".",
   "display": "standalone",
   "background_color": "#121212",
   "theme_color": "#121212",
   "orientation": "portrait",
   "icons": [
     {
-      "src": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d0/Radar_icon.svg/192px-Radar_icon.svg.png",
+      "src": "icon.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d0/Radar_icon.svg/512px-Radar_icon.svg.png",
+      "src": "icon.png",
       "sizes": "512x512",
       "type": "image/png"
     }
