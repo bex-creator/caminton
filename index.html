@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Human Tracker Web App</title>
+  <title>Human Tracker with Recording & Playback</title>
   <style>
     * {
       box-sizing: border-box;
@@ -21,16 +21,52 @@
       justify-content: center;
       height: 100vh;
     }
-    #status {
+    
+    /* Top Bar Controls */
+    #controls {
       position: absolute;
       top: 15px;
       z-index: 10;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    #status {
       background: rgba(0, 0, 0, 0.7);
       padding: 8px 16px;
       border-radius: 20px;
       font-size: 14px;
       border: 1px solid #333;
     }
+    .btn {
+      background: #ff3366;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: bold;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.2s ease;
+    }
+    .btn:disabled {
+      background: #555555;
+      cursor: not-allowed;
+    }
+    .btn.recording {
+      background: #ff0000;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.5; }
+      100% { opacity: 1; }
+    }
+
+    /* Main Display */
     .container {
       position: relative;
       width: 100vw;
@@ -39,24 +75,76 @@
       justify-content: center;
       align-items: center;
     }
-    video, canvas {
-      position: absolute;
+    video#webcam {
+      display: none; /* Hidden - rendered directly into canvas for unified recording */
+    }
+    canvas#output {
       width: 100%;
       height: 100%;
       object-fit: cover;
     }
+
+    /* Playback Modal */
+    #playbackModal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(0, 0, 0, 0.9);
+      z-index: 20;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 15px;
+      padding: 20px;
+    }
+    #recordedVideo {
+      max-width: 90%;
+      max-height: 70vh;
+      border-radius: 10px;
+      border: 2px solid #00ffcc;
+    }
+    .modal-actions {
+      display: flex;
+      gap: 15px;
+    }
+    .btn-secondary {
+      background: #00ffcc;
+      color: #000;
+      text-decoration: none;
+    }
+    .btn-close {
+      background: #444;
+      color: #fff;
+    }
   </style>
 
+  <!-- TensorFlow.js and COCO-SSD -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
 </head>
 <body>
 
-  <div id="status">Loading Vision AI Model...</div>
+  <div id="controls">
+    <div id="status">Loading Vision AI...</div>
+    <button id="recordBtn" class="btn" disabled>🔴 Record</button>
+  </div>
 
   <div class="container">
     <video id="webcam" autoplay playsinline muted></video>
     <canvas id="output"></canvas>
+  </div>
+
+  <!-- Playback Overlay Modal -->
+  <div id="playbackModal">
+    <h2>Playback Recording</h2>
+    <video id="recordedVideo" controls></video>
+    <div class="modal-actions">
+      <a id="downloadBtn" class="btn btn-secondary" download="human-tracking.webm">Download Video</a>
+      <button id="closeModalBtn" class="btn btn-close">Close</button>
+    </div>
   </div>
 
   <script>
@@ -64,17 +152,22 @@
     const canvas = document.getElementById('output');
     const ctx = canvas.getContext('2d');
     const statusText = document.getElementById('status');
+    const recordBtn = document.getElementById('recordBtn');
+    
+    const playbackModal = document.getElementById('playbackModal');
+    const recordedVideo = document.getElementById('recordedVideo');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const closeModalBtn = document.getElementById('closeModalBtn');
 
     let model;
+    let mediaRecorder;
+    let recordedChunks = [];
+    let isRecording = false;
 
-    // 1. Setup device camera (uses rear camera on smartphones)
+    // 1. Camera Setup
     async function setupCamera() {
       const constraints = {
-        video: {
-          facingMode: 'environment', // Prefer back camera on mobile
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        },
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false
       };
 
@@ -82,75 +175,147 @@
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         video.srcObject = stream;
         return new Promise((resolve) => {
-          video.onloadedmetadata = () => {
-            resolve(video);
-          };
+          video.onloadedmetadata = () => resolve(video);
         });
       } catch (err) {
-        statusText.innerText = 'Camera access denied or unavailable.';
+        statusText.innerText = 'Camera access denied.';
         console.error(err);
       }
     }
 
-    // 2. Continuous detection loop
+    // 2. Continuous Frame Processing & Detection
     async function detectFrame() {
-      // Resize canvas to match video stream dimensions
       if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
       }
 
-      // Perform object detection
-      const predictions = await model.detect(video);
+      // Draw camera frame directly to canvas
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      // Clear previous overlay
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // Perform AI Detection
+      if (model) {
+        const predictions = await model.detect(video);
 
-      // Filter and draw highlights for humans only
-      predictions.forEach(prediction => {
-        if (prediction.class === 'person' && prediction.score > 0.4) {
-          const [x, y, width, height] = prediction.bbox;
+        // Overlay human detection boxes
+        predictions.forEach(prediction => {
+          if (prediction.class === 'person' && prediction.score > 0.4) {
+            const [x, y, width, height] = prediction.bbox;
 
-          // Draw neon bounding box
-          ctx.strokeStyle = '#00ffcc';
-          ctx.lineWidth = 4;
-          ctx.shadowColor = '#00ffcc';
-          ctx.shadowBlur = 10;
-          ctx.strokeRect(x, y, width, height);
+            // Neon Bounding Box
+            ctx.strokeStyle = '#00ffcc';
+            ctx.lineWidth = 4;
+            ctx.shadowColor = '#00ffcc';
+            ctx.shadowBlur = 10;
+            ctx.strokeRect(x, y, width, height);
 
-          // Draw label background
-          ctx.fillStyle = '#00ffcc';
-          ctx.shadowBlur = 0;
-          const text = `HUMAN (${Math.round(prediction.score * 100)}%)`;
-          ctx.font = '16px sans-serif';
-          const textWidth = ctx.measureText(text).width;
-          ctx.fillRect(x, y > 25 ? y - 25 : y, textWidth + 10, 22);
+            // Label Box
+            ctx.fillStyle = '#00ffcc';
+            ctx.shadowBlur = 0;
+            const text = `HUMAN (${Math.round(prediction.score * 100)}%)`;
+            ctx.font = '16px sans-serif';
+            const textWidth = ctx.measureText(text).width;
+            ctx.fillRect(x, y > 25 ? y - 25 : y, textWidth + 10, 22);
 
-          // Draw label text
-          ctx.fillStyle = '#000000';
-          ctx.fillText(text, x + 5, y > 25 ? y - 8 : y + 16);
-        }
-      });
+            // Label Text
+            ctx.fillStyle = '#000000';
+            ctx.fillText(text, x + 5, y > 25 ? y - 8 : y + 16);
+          }
+        });
+      }
 
-      // Request next frame
       requestAnimationFrame(detectFrame);
     }
 
-    // 3. Initialize the app
+    // 3. Recording Functions
+    function toggleRecording() {
+      if (!isRecording) {
+        startRecording();
+      } else {
+        stopRecording();
+      }
+    }
+
+    function startRecording() {
+      recordedChunks = [];
+      
+      // Capture combined canvas stream at 30 FPS
+      const canvasStream = canvas.captureStream(30);
+
+      // Choose supported video format
+      let options = {};
+      if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+        options = { mimeType: 'video/webm;codecs=vp9' };
+      } else if (MediaRecorder.isTypeSupported('video/webm')) {
+        options = { mimeType: 'video/webm' };
+      } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+        options = { mimeType: 'video/mp4' };
+      }
+
+      mediaRecorder = new MediaRecorder(canvasStream, options);
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedChunks.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const mimeType = mediaRecorder.mimeType || 'video/webm';
+        const blob = new Blob(recordedChunks, { type: mimeType });
+        const videoURL = URL.createObjectURL(blob);
+        
+        // Load into Playback Modal
+        recordedVideo.src = videoURL;
+        downloadBtn.href = videoURL;
+        
+        const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+        downloadBtn.download = `human-tracking-${Date.now()}.${ext}`;
+
+        playbackModal.style.display = 'flex';
+      };
+
+      mediaRecorder.start();
+      isRecording = true;
+      recordBtn.innerText = '⏹ Stop Recording';
+      recordBtn.classList.add('recording');
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && isRecording) {
+        mediaRecorder.stop();
+        isRecording = false;
+        recordBtn.innerText = '🔴 Record';
+        recordBtn.classList.remove('recording');
+      }
+    }
+
+    // 4. Modal Controls
+    closeModalBtn.addEventListener('click', () => {
+      playbackModal.style.display = 'none';
+      recordedVideo.pause();
+    });
+
+    recordBtn.addEventListener('click', toggleRecording);
+
+    // 5. App Initialization
     async function init() {
       try {
         await setupCamera();
         video.play();
         
+        // Start rendering frames immediately
+        detectFrame();
+
         statusText.innerText = 'Loading AI Model...';
         model = await cocoSsd.load();
         
         statusText.innerText = 'Tracking Active';
         statusText.style.borderColor = '#00ffcc';
-        
-        detectFrame();
+        recordBtn.disabled = false;
+
       } catch (err) {
-        statusText.innerText = 'Failed to load model.';
+        statusText.innerText = 'Initialization failed.';
         console.error(err);
       }
     }
