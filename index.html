@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Human Tracker with Auto-Torch</title>
+  <title>Human Tracker - Auto Flashlight Lens Detection</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -57,8 +57,8 @@
 <body>
 
   <div id="controls">
-    <div id="status" class="badge">Loading Vision AI...</div>
-    <div id="torchStatus" class="badge">🔦 Auto-Torch: OFF</div>
+    <div id="status" class="badge">Scanning Lenses...</div>
+    <div id="torchStatus" class="badge">🔦 Searching Torch Lens...</div>
     <button id="recordBtn" class="btn" disabled>🔴 Record</button>
   </div>
 
@@ -100,17 +100,66 @@
     let recordedChunks = [];
     let isRecording = false;
 
-    // 1. Camera Setup
+    // 1. Lens Scanner: Finds the camera lens that physically supports the flashlight
     async function setupCamera() {
-      const constraints = {
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false
-      };
-
       try {
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        video.srcObject = stream;
-        videoTrack = stream.getVideoTracks()[0]; // Save track to control flashlight
+        // Request initial permission to unlock device list & capabilities
+        let initialStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false
+        });
+
+        // Enumerate all video input devices (lenses)
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+
+        let torchStream = null;
+        let torchTrack = null;
+
+        // Iterate through all camera lenses to find the one with torch capabilities
+        for (const device of videoDevices) {
+          try {
+            const testStream = await navigator.mediaDevices.getUserMedia({
+              video: { deviceId: { exact: device.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } },
+              audio: false
+            });
+            const track = testStream.getVideoTracks()[0];
+            const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+
+            if (capabilities.torch) {
+              // Found the specific lens tied to the physical flashlight!
+              torchStream = testStream;
+              torchTrack = track;
+              
+              // Clean up initial stream if it wasn't the torch lens
+              if (initialStream && initialStream !== testStream) {
+                initialStream.getTracks().forEach(t => t.stop());
+              }
+              break;
+            } else {
+              // Not the torch lens; close test stream unless it's initial
+              if (testStream !== initialStream) {
+                testStream.getTracks().forEach(t => t.stop());
+              }
+            }
+          } catch (e) {
+            console.warn('Could not inspect lens:', device.label, e);
+          }
+        }
+
+        // Fallback to initial stream if no lens explicitly reports torch capability
+        if (!torchStream) {
+          torchStream = initialStream;
+          torchTrack = initialStream.getVideoTracks()[0];
+          torchStatusText.innerText = '🔦 Torch: Not Available';
+        } else {
+          torchStatusText.innerText = '🔦 Torch Lens Locked';
+          torchStatusText.style.borderColor = '#00ffcc';
+        }
+
+        video.srcObject = torchStream;
+        videoTrack = torchTrack;
+
         return new Promise((resolve) => {
           video.onloadedmetadata = () => resolve(video);
         });
@@ -122,30 +171,23 @@
 
     // 2. Auto-Flashlight Logic
     async function handleAutoTorch() {
-      // Check twice a second to save performance
       const now = Date.now();
-      if (now - lastBrightnessCheck < 500) return;
+      if (now - lastBrightnessCheck < 500) return; // Check every 0.5s
       lastBrightnessCheck = now;
 
-      // Ensure the browser and hardware actually support the torch feature
       if (!videoTrack) return;
       const capabilities = videoTrack.getCapabilities && videoTrack.getCapabilities();
-      if (!capabilities || !capabilities.torch) {
-        torchStatusText.innerText = '🔦 Torch Not Supported';
-        return;
-      }
+      if (!capabilities || !capabilities.torch) return;
 
-      // Sample a grid of pixels to calculate average brightness
+      // Calculate average scene brightness
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
       let totalLuminance = 0;
       let samples = 0;
       
-      // Sample every 400th pixel for speed
       for (let i = 0; i < imageData.length; i += 400) {
         const r = imageData[i];
         const g = imageData[i+1];
         const b = imageData[i+2];
-        // Standard formula to convert RGB to human-perceived luminance (0 to 255)
         const luminance = 0.299 * r + 0.587 * g + 0.114 * b; 
         totalLuminance += luminance;
         samples++;
@@ -153,8 +195,6 @@
       
       const avgBrightness = totalLuminance / samples;
       
-      // Thresholds: Turn on if darker than 40, turn off if brighter than 80
-      // (The gap prevents the light from flickering on and off repeatedly)
       try {
         if (avgBrightness < 40 && !isTorchOn) {
           await videoTrack.applyConstraints({ advanced: [{ torch: true }] });
@@ -168,7 +208,7 @@
           torchStatusText.style.borderColor = '#333';
         }
       } catch (err) {
-        console.error('Failed to toggle torch', err);
+        console.error('Failed to toggle flashlight', err);
       }
     }
 
@@ -179,13 +219,9 @@
         canvas.height = video.videoHeight;
       }
 
-      // Draw camera frame directly to canvas
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      
-      // Check brightness and adjust flashlight
       handleAutoTorch();
 
-      // Perform AI Detection
       if (model) {
         const predictions = await model.detect(video);
 
@@ -193,14 +229,12 @@
           if (prediction.class === 'person' && prediction.score > 0.4) {
             const [x, y, width, height] = prediction.bbox;
 
-            // Neon Bounding Box
             ctx.strokeStyle = '#00ffcc';
             ctx.lineWidth = 4;
             ctx.shadowColor = '#00ffcc';
             ctx.shadowBlur = 10;
             ctx.strokeRect(x, y, width, height);
 
-            // Label Box
             ctx.fillStyle = '#00ffcc';
             ctx.shadowBlur = 0;
             const text = `HUMAN (${Math.round(prediction.score * 100)}%)`;
@@ -208,7 +242,6 @@
             const textWidth = ctx.measureText(text).width;
             ctx.fillRect(x, y > 25 ? y - 25 : y, textWidth + 10, 22);
 
-            // Label Text
             ctx.fillStyle = '#000000';
             ctx.fillText(text, x + 5, y > 25 ? y - 8 : y + 16);
           }
