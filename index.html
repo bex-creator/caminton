@@ -3,7 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Human Tracker - Auto Flashlight Lens Detection</title>
+  <title>Human Tracker with GPS & Radar</title>
+  
+  <!-- Leaflet CSS for the GPS Map -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -13,30 +17,62 @@
       align-items: center; justify-content: center; height: 100vh;
     }
     
+    /* Top Controls */
     #controls {
       position: absolute; top: 15px; z-index: 10;
-      display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center;
+      display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center;
+      width: 100%; padding: 0 10px;
     }
     .badge {
-      background: rgba(0, 0, 0, 0.7); padding: 8px 16px;
-      border-radius: 20px; font-size: 14px; border: 1px solid #333;
+      background: rgba(0, 0, 0, 0.7); padding: 8px 12px;
+      border-radius: 20px; font-size: 13px; border: 1px solid #333;
     }
     .btn {
       background: #ff3366; color: white; border: none;
-      padding: 8px 16px; border-radius: 20px; font-size: 14px;
-      font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 6px;
+      padding: 8px 14px; border-radius: 20px; font-size: 13px;
+      font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 4px;
     }
+    .btn-secondary { background: #3399ff; }
     .btn:disabled { background: #555555; cursor: not-allowed; }
     .btn.recording { background: #ff0000; animation: pulse 1.5s infinite; }
     
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
 
+    /* Main Video/Canvas Setup */
     .container {
       position: relative; width: 100vw; height: 100vh;
       display: flex; justify-content: center; align-items: center;
     }
     video#webcam { display: none; }
     canvas#output { width: 100%; height: 100%; object-fit: cover; }
+
+    /* Local Camera Radar */
+    #radarCanvas {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      width: 160px;
+      height: 160px;
+      border-radius: 50%;
+      border: 3px solid #ff3366;
+      z-index: 15;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.8);
+      background: rgba(0, 20, 0, 0.7);
+    }
+
+    /* GPS Minimap Overlay */
+    #minimap {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      width: 160px;
+      height: 160px;
+      border-radius: 15px;
+      border: 3px solid #00ffcc;
+      z-index: 15;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+      background: #222;
+    }
 
     /* Playback Modal */
     #playbackModal {
@@ -46,19 +82,19 @@
     }
     #recordedVideo { max-width: 90%; max-height: 70vh; border-radius: 10px; border: 2px solid #00ffcc; }
     .modal-actions { display: flex; gap: 15px; }
-    .btn-secondary { background: #00ffcc; color: #000; text-decoration: none; padding: 8px 16px; border-radius: 20px; font-weight:bold; cursor: pointer;}
-    .btn-close { background: #444; color: #fff; padding: 8px 16px; border-radius: 20px; border: none; font-weight:bold; cursor: pointer;}
+    .modal-btn { background: #00ffcc; color: #000; text-decoration: none; padding: 8px 16px; border-radius: 20px; font-weight:bold; cursor: pointer; border:none;}
+    .btn-close { background: #444; color: #fff; }
   </style>
 
-  <!-- TensorFlow.js and COCO-SSD -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
 
   <div id="controls">
-    <div id="status" class="badge">Scanning Lenses...</div>
-    <div id="torchStatus" class="badge">🔦 Searching Torch Lens...</div>
+    <button id="switchLensBtn" class="btn btn-secondary">🔄 Switch Lens</button>
+    <div id="torchStatus" class="badge">🔦 Torch: OFF</div>
     <button id="recordBtn" class="btn" disabled>🔴 Record</button>
   </div>
 
@@ -66,153 +102,127 @@
     <video id="webcam" autoplay playsinline muted></video>
     <canvas id="output"></canvas>
   </div>
+  
+  <!-- Camera Spatial Radar -->
+  <canvas id="radarCanvas" width="200" height="200"></canvas>
 
+  <!-- GPS Minimap -->
+  <div id="minimap"></div>
+
+  <!-- Recording Playback Modal -->
   <div id="playbackModal">
     <h2>Playback Recording</h2>
     <video id="recordedVideo" controls></video>
     <div class="modal-actions">
-      <a id="downloadBtn" class="btn-secondary" download="human-tracking.webm">Download Video</a>
-      <button id="closeModalBtn" class="btn-close">Close</button>
+      <a id="downloadBtn" class="modal-btn" download="human-tracking.webm">Download Video</a>
+      <button id="closeModalBtn" class="modal-btn btn-close">Close</button>
     </div>
   </div>
 
   <script>
+    // --- UI Elements ---
     const video = document.getElementById('webcam');
     const canvas = document.getElementById('output');
     const ctx = canvas.getContext('2d');
-    const statusText = document.getElementById('status');
+    const radar = document.getElementById('radarCanvas');
+    const radarCtx = radar.getContext('2d');
     const torchStatusText = document.getElementById('torchStatus');
-    const recordBtn = document.getElementById('recordBtn');
     
-    // Playback variables
-    const playbackModal = document.getElementById('playbackModal');
-    const recordedVideo = document.getElementById('recordedVideo');
-    const downloadBtn = document.getElementById('downloadBtn');
-    const closeModalBtn = document.getElementById('closeModalBtn');
-
+    // --- State Variables ---
     let model;
     let videoTrack;
-    let isTorchOn = false;
-    let lastBrightnessCheck = 0;
+    let videoDevices = [];
+    let currentDeviceIndex = 0;
     
-    // Recording variables
-    let mediaRecorder;
-    let recordedChunks = [];
-    let isRecording = false;
+    // ==========================================
+    // 1. RADAR MAPPING LOGIC
+    // ==========================================
+    let sweepAngle = 0;
+    const MAX_RADAR_DISTANCE_METERS = 10; // Radar covers up to 10 meters away
+    const HUMAN_HEIGHT_METERS = 1.7; // Average height
 
-    // 1. Lens Scanner: Finds the camera lens that physically supports the flashlight
-    async function setupCamera() {
-      try {
-        // Request initial permission to unlock device list & capabilities
-        let initialStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: false
-        });
-
-        // Enumerate all video input devices (lenses)
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoDevices = devices.filter(d => d.kind === 'videoinput');
-
-        let torchStream = null;
-        let torchTrack = null;
-
-        // Iterate through all camera lenses to find the one with torch capabilities
-        for (const device of videoDevices) {
-          try {
-            const testStream = await navigator.mediaDevices.getUserMedia({
-              video: { deviceId: { exact: device.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } },
-              audio: false
-            });
-            const track = testStream.getVideoTracks()[0];
-            const capabilities = track.getCapabilities ? track.getCapabilities() : {};
-
-            if (capabilities.torch) {
-              // Found the specific lens tied to the physical flashlight!
-              torchStream = testStream;
-              torchTrack = track;
-              
-              // Clean up initial stream if it wasn't the torch lens
-              if (initialStream && initialStream !== testStream) {
-                initialStream.getTracks().forEach(t => t.stop());
-              }
-              break;
-            } else {
-              // Not the torch lens; close test stream unless it's initial
-              if (testStream !== initialStream) {
-                testStream.getTracks().forEach(t => t.stop());
-              }
-            }
-          } catch (e) {
-            console.warn('Could not inspect lens:', device.label, e);
-          }
-        }
-
-        // Fallback to initial stream if no lens explicitly reports torch capability
-        if (!torchStream) {
-          torchStream = initialStream;
-          torchTrack = initialStream.getVideoTracks()[0];
-          torchStatusText.innerText = '🔦 Torch: Not Available';
-        } else {
-          torchStatusText.innerText = '🔦 Torch Lens Locked';
-          torchStatusText.style.borderColor = '#00ffcc';
-        }
-
-        video.srcObject = torchStream;
-        videoTrack = torchTrack;
-
-        return new Promise((resolve) => {
-          video.onloadedmetadata = () => resolve(video);
-        });
-      } catch (err) {
-        statusText.innerText = 'Camera access denied.';
-        console.error(err);
+    function drawRadar(predictions) {
+      const w = radar.width;
+      const h = radar.height;
+      
+      // Clear and draw radar background
+      radarCtx.clearRect(0, 0, w, h);
+      
+      // Draw Grid Rings
+      radarCtx.strokeStyle = 'rgba(0, 255, 204, 0.3)';
+      radarCtx.lineWidth = 1;
+      for (let i = 1; i <= 3; i++) {
+        radarCtx.beginPath();
+        radarCtx.arc(w/2, h/2, (w/2) * (i/3), 0, Math.PI * 2);
+        radarCtx.stroke();
       }
+      
+      // Draw crosshairs
+      radarCtx.beginPath();
+      radarCtx.moveTo(w/2, 0); radarCtx.lineTo(w/2, h);
+      radarCtx.moveTo(0, h/2); radarCtx.lineTo(w, h/2);
+      radarCtx.stroke();
+
+      // Draw sweeping line
+      sweepAngle = (sweepAngle + 0.05) % (Math.PI * 2);
+      radarCtx.beginPath();
+      radarCtx.moveTo(w/2, h/2);
+      radarCtx.lineTo(w/2 + Math.cos(sweepAngle) * w/2, h/2 + Math.sin(sweepAngle) * h/2);
+      radarCtx.strokeStyle = 'rgba(0, 255, 204, 0.8)';
+      radarCtx.lineWidth = 2;
+      radarCtx.stroke();
+
+      // Map detected humans
+      predictions.forEach(p => {
+        if (p.class === 'person' && p.score > 0.4) {
+          const [boxX, boxY, boxWidth, boxHeight] = p.bbox;
+
+          // 1. Calculate estimated distance
+          // Distance formula based on camera FOV ratio
+          const focalLengthApproximation = canvas.height * 0.8; 
+          let distance = (HUMAN_HEIGHT_METERS * focalLengthApproximation) / boxHeight;
+          
+          // Cap distance to max radar range
+          if (distance > MAX_RADAR_DISTANCE_METERS) distance = MAX_RADAR_DISTANCE_METERS;
+
+          // 2. Calculate Angle (Horizontal offset from center of screen)
+          const boxCenterX = boxX + (boxWidth / 2);
+          const screenCenterX = canvas.width / 2;
+          const offsetX = boxCenterX - screenCenterX;
+          const angle = Math.atan2(offsetX, focalLengthApproximation); // Radians
+
+          // 3. Convert to Radar Coordinates (User is at bottom center of radar)
+          // Radar scale: distance to pixels
+          const pixelsPerMeter = (h / 2) / MAX_RADAR_DISTANCE_METERS;
+          
+          // Start from bottom-center of the radar circle (representing the camera)
+          const radarOriginX = w / 2;
+          const radarOriginY = h - 10; 
+          
+          const plotX = radarOriginX + (Math.sin(angle) * (distance * pixelsPerMeter));
+          const plotY = radarOriginY - (Math.cos(angle) * (distance * pixelsPerMeter));
+
+          // Draw blip
+          radarCtx.beginPath();
+          radarCtx.arc(plotX, plotY, 6, 0, Math.PI * 2);
+          radarCtx.fillStyle = '#ff3366'; // Red dot for human
+          radarCtx.fill();
+          
+          radarCtx.shadowColor = '#ff3366';
+          radarCtx.shadowBlur = 10;
+          
+          // Draw distance text on radar
+          radarCtx.fillStyle = '#ffffff';
+          radarCtx.font = '10px sans-serif';
+          radarCtx.shadowBlur = 0;
+          radarCtx.fillText(`${distance.toFixed(1)}m`, plotX + 8, plotY + 4);
+        }
+      });
     }
 
-    // 2. Auto-Flashlight Logic
-    async function handleAutoTorch() {
-      const now = Date.now();
-      if (now - lastBrightnessCheck < 500) return; // Check every 0.5s
-      lastBrightnessCheck = now;
-
-      if (!videoTrack) return;
-      const capabilities = videoTrack.getCapabilities && videoTrack.getCapabilities();
-      if (!capabilities || !capabilities.torch) return;
-
-      // Calculate average scene brightness
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      let totalLuminance = 0;
-      let samples = 0;
-      
-      for (let i = 0; i < imageData.length; i += 400) {
-        const r = imageData[i];
-        const g = imageData[i+1];
-        const b = imageData[i+2];
-        const luminance = 0.299 * r + 0.587 * g + 0.114 * b; 
-        totalLuminance += luminance;
-        samples++;
-      }
-      
-      const avgBrightness = totalLuminance / samples;
-      
-      try {
-        if (avgBrightness < 40 && !isTorchOn) {
-          await videoTrack.applyConstraints({ advanced: [{ torch: true }] });
-          isTorchOn = true;
-          torchStatusText.innerText = '🔦 Auto-Torch: ON';
-          torchStatusText.style.borderColor = '#ffcc00';
-        } else if (avgBrightness > 80 && isTorchOn) {
-          await videoTrack.applyConstraints({ advanced: [{ torch: false }] });
-          isTorchOn = false;
-          torchStatusText.innerText = '🔦 Auto-Torch: OFF';
-          torchStatusText.style.borderColor = '#333';
-        }
-      } catch (err) {
-        console.error('Failed to toggle flashlight', err);
-      }
-    }
-
-    // 3. Continuous Frame Processing & Detection
+    // ==========================================
+    // 2. MAIN TRACKING LOOP
+    // ==========================================
     async function detectFrame() {
       if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
         canvas.width = video.videoWidth;
@@ -220,11 +230,14 @@
       }
 
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      handleAutoTorch();
 
       if (model) {
         const predictions = await model.detect(video);
+        
+        // Update 3D Camera Radar
+        drawRadar(predictions);
 
+        // Draw normal 2D Highlights on camera feed
         predictions.forEach(prediction => {
           if (prediction.class === 'person' && prediction.score > 0.4) {
             const [x, y, width, height] = prediction.bbox;
@@ -239,8 +252,7 @@
             ctx.shadowBlur = 0;
             const text = `HUMAN (${Math.round(prediction.score * 100)}%)`;
             ctx.font = '16px sans-serif';
-            const textWidth = ctx.measureText(text).width;
-            ctx.fillRect(x, y > 25 ? y - 25 : y, textWidth + 10, 22);
+            ctx.fillRect(x, y > 25 ? y - 25 : y, ctx.measureText(text).width + 10, 22);
 
             ctx.fillStyle = '#000000';
             ctx.fillText(text, x + 5, y > 25 ? y - 8 : y + 16);
@@ -251,79 +263,67 @@
       requestAnimationFrame(detectFrame);
     }
 
-    // 4. Recording Functions
-    function toggleRecording() {
-      if (!isRecording) startRecording();
-      else stopRecording();
+    // ==========================================
+    // 3. CAMERA & GPS INITIALIZATION
+    // ==========================================
+    async function getCameras() {
+      await navigator.mediaDevices.getUserMedia({ video: true });
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      videoDevices = devices.filter(d => d.kind === 'videoinput');
+      const backCameraIndex = videoDevices.findIndex(d => d.label.toLowerCase().includes('back'));
+      if (backCameraIndex !== -1) currentDeviceIndex = backCameraIndex;
     }
 
-    function startRecording() {
-      recordedChunks = [];
-      const canvasStream = canvas.captureStream(30);
-      
-      let options = {};
-      if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) options = { mimeType: 'video/webm;codecs=vp9' };
-      else if (MediaRecorder.isTypeSupported('video/webm')) options = { mimeType: 'video/webm' };
-      else if (MediaRecorder.isTypeSupported('video/mp4')) options = { mimeType: 'video/mp4' };
-
-      mediaRecorder = new MediaRecorder(canvasStream, options);
-
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) recordedChunks.push(e.data);
-      };
-
-      mediaRecorder.onstop = () => {
-        const mimeType = mediaRecorder.mimeType || 'video/webm';
-        const blob = new Blob(recordedChunks, { type: mimeType });
-        const videoURL = URL.createObjectURL(blob);
+    async function startStream(deviceIndex) {
+      if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: videoDevices[deviceIndex].deviceId }, width: { ideal: 1280 } }
+        });
+        video.srcObject = stream;
+        videoTrack = stream.getVideoTracks()[0];
         
-        recordedVideo.src = videoURL;
-        downloadBtn.href = videoURL;
-        const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-        downloadBtn.download = `human-tracking-${Date.now()}.${ext}`;
-        playbackModal.style.display = 'flex';
-      };
-
-      mediaRecorder.start();
-      isRecording = true;
-      recordBtn.innerText = '⏹ Stop Recording';
-      recordBtn.classList.add('recording');
+        return new Promise(resolve => {
+          video.onloadedmetadata = () => { video.play(); resolve(); };
+        });
+      } catch (e) { console.error("Camera error: ", e); }
     }
 
-    function stopRecording() {
-      if (mediaRecorder && isRecording) {
-        mediaRecorder.stop();
-        isRecording = false;
-        recordBtn.innerText = '🔴 Record';
-        recordBtn.classList.remove('recording');
-      }
-    }
-
-    closeModalBtn.addEventListener('click', () => {
-      playbackModal.style.display = 'none';
-      recordedVideo.pause();
+    document.getElementById('switchLensBtn').addEventListener('click', async () => {
+      if (videoDevices.length === 0) return;
+      currentDeviceIndex = (currentDeviceIndex + 1) % videoDevices.length;
+      await startStream(currentDeviceIndex);
     });
 
-    recordBtn.addEventListener('click', toggleRecording);
+    // Initialize GPS (Leaflet)
+    function initGPS() {
+      if (!("geolocation" in navigator)) return;
+      let map, pathLine, init = false;
+      
+      navigator.geolocation.watchPosition((pos) => {
+        const lat = pos.coords.latitude, lng = pos.coords.longitude;
+        if (!init) {
+          map = L.map('minimap', { zoomControl: false, attributionControl: false }).setView([lat, lng], 17);
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+          pathLine = L.polyline([[lat, lng]], {color: '#ff3366', weight: 4}).addTo(map);
+          L.circleMarker([lat, lng], {color: '#00ffcc', radius: 6}).addTo(map);
+          init = true;
+        } else {
+          pathLine.addLatLng([lat, lng]);
+          map.panTo([lat, lng]);
+        }
+      }, null, { enableHighAccuracy: true });
+    }
 
-    // 5. App Initialization
     async function init() {
-      try {
-        await setupCamera();
-        video.play();
-        detectFrame();
-
-        statusText.innerText = 'Loading AI Model...';
-        model = await cocoSsd.load();
-        
-        statusText.innerText = 'Tracking Active';
-        statusText.style.borderColor = '#00ffcc';
-        recordBtn.disabled = false;
-
-      } catch (err) {
-        statusText.innerText = 'Initialization failed.';
-        console.error(err);
-      }
+      initGPS();
+      await getCameras();
+      if (videoDevices.length > 0) await startStream(currentDeviceIndex);
+      
+      detectFrame();
+      torchStatusText.innerText = 'Loading AI...';
+      model = await cocoSsd.load();
+      torchStatusText.innerText = 'System Active';
     }
 
     init();
