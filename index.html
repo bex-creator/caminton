@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Human Tracker Pro</title>
   
-  <!-- Leaflet CSS for the GPS Map -->
+  <!-- Leaflet CSS for GPS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 
   <style>
@@ -117,67 +117,85 @@
     let currentDeviceIndex = 0;
     let isTorchOn = false;
     let lastBrightnessCheck = 0;
+    let isSwitchingCamera = false; // Safety lock flag
 
     let mediaRecorder;
     let recordedChunks = [];
     let isRecording = false;
 
     // ==========================================
-    // 1. CAMERA FIX & SWITCHING
+    // 1. STABLE CAMERA SWITCHING
     // ==========================================
     async function getCameras() {
-      // Open temporary stream to unlock device labels
-      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      videoDevices = devices.filter(d => d.kind === 'videoinput');
-      
-      // FIX: Explicitly stop the temporary stream so the hardware is freed up!
-      tempStream.getTracks().forEach(track => track.stop());
+      try {
+        const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        videoDevices = devices.filter(d => d.kind === 'videoinput');
+        tempStream.getTracks().forEach(track => track.stop());
 
-      // Default to back camera
-      const backCameraIndex = videoDevices.findIndex(d => d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('environment'));
-      if (backCameraIndex !== -1) currentDeviceIndex = backCameraIndex;
+        const backCameraIndex = videoDevices.findIndex(d => 
+          d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('environment')
+        );
+        if (backCameraIndex !== -1) currentDeviceIndex = backCameraIndex;
+      } catch (e) {
+        console.error("Camera enumeration error:", e);
+      }
     }
 
     async function startStream(deviceIndex) {
+      isSwitchingCamera = true; // Lock detection loop during lens swap
+      isTorchOn = false;
+
+      // Fully stop existing stream
       if (video.srcObject) {
-        video.srcObject.getTracks().forEach(t => t.stop());
+        const tracks = video.srcObject.getTracks();
+        tracks.forEach(track => track.stop());
+        video.srcObject = null;
       }
       
       try {
-        let constraints = { video: { facingMode: 'environment' } }; // Safe fallback
-        if (videoDevices.length > 0 && videoDevices[deviceIndex].deviceId) {
-          constraints = { video: { deviceId: { exact: videoDevices[deviceIndex].deviceId }, width: { ideal: 1280 } } };
+        let constraints = { video: { facingMode: 'environment' } };
+        if (videoDevices.length > 0 && videoDevices[deviceIndex]?.deviceId) {
+          constraints = { video: { deviceId: { exact: videoDevices[deviceIndex].deviceId } } };
         }
 
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         video.srcObject = stream;
         videoTrack = stream.getVideoTracks()[0];
         
-        // Torch capability check
+        // Wait until stream metadata is loaded and video is playing
+        await new Promise((resolve) => {
+          video.onloadedmetadata = () => {
+            video.play().then(resolve).catch(resolve);
+          };
+        });
+
+        // Check torch capabilities safely
         setTimeout(() => {
-          const caps = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
-          if (caps.torch) {
-            torchStatusText.innerText = '🔦 Torch: READY';
-            torchStatusText.style.borderColor = '#00ffcc';
-          } else {
-            torchStatusText.innerText = '🔦 Torch: No Hardware';
-            torchStatusText.style.borderColor = '#333';
-            isTorchOn = false;
+          try {
+            const caps = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
+            if (caps.torch) {
+              torchStatusText.innerText = '🔦 Torch: READY';
+              torchStatusText.style.borderColor = '#00ffcc';
+            } else {
+              torchStatusText.innerText = '🔦 Torch: N/A';
+              torchStatusText.style.borderColor = '#333';
+            }
+          } catch(err) {
+            torchStatusText.innerText = '🔦 Torch: N/A';
           }
         }, 500);
 
-        return new Promise(resolve => {
-          video.onloadedmetadata = () => { video.play(); resolve(); };
-        });
       } catch (e) {
         console.error("Camera stream error: ", e);
-        torchStatusText.innerText = "Camera Blocked";
+        torchStatusText.innerText = "Switch Failed";
+      } finally {
+        isSwitchingCamera = false; // Unlock detection loop
       }
     }
 
     document.getElementById('switchLensBtn').addEventListener('click', async () => {
-      if (videoDevices.length === 0) return;
+      if (videoDevices.length === 0 || isSwitchingCamera) return;
       currentDeviceIndex = (currentDeviceIndex + 1) % videoDevices.length;
       await startStream(currentDeviceIndex);
     });
@@ -187,23 +205,22 @@
     // ==========================================
     async function handleAutoTorch() {
       const now = Date.now();
-      if (now - lastBrightnessCheck < 500) return;
+      if (now - lastBrightnessCheck < 500 || !videoTrack || isSwitchingCamera) return;
       lastBrightnessCheck = now;
 
-      if (!videoTrack) return;
-      const capabilities = videoTrack.getCapabilities && videoTrack.getCapabilities();
-      if (!capabilities || !capabilities.torch) return;
-
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      let totalLuminance = 0, samples = 0;
-      
-      for (let i = 0; i < imageData.length; i += 400) {
-        totalLuminance += (0.299 * imageData[i] + 0.587 * imageData[i+1] + 0.114 * imageData[i+2]);
-        samples++;
-      }
-      const avgBrightness = totalLuminance / samples;
-      
       try {
+        const capabilities = videoTrack.getCapabilities && videoTrack.getCapabilities();
+        if (!capabilities || !capabilities.torch) return;
+
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        let totalLuminance = 0, samples = 0;
+        
+        for (let i = 0; i < imageData.length; i += 400) {
+          totalLuminance += (0.299 * imageData[i] + 0.587 * imageData[i+1] + 0.114 * imageData[i+2]);
+          samples++;
+        }
+        const avgBrightness = totalLuminance / samples;
+        
         if (avgBrightness < 40 && !isTorchOn) {
           await videoTrack.applyConstraints({ advanced: [{ torch: true }] });
           isTorchOn = true;
@@ -215,7 +232,9 @@
           torchStatusText.innerText = '🔦 Auto-Torch: OFF';
           torchStatusText.style.borderColor = '#333';
         }
-      } catch (err) { console.error('Flashlight err', err); }
+      } catch (err) {
+        // Torch constraint errors ignored safely when switching back/front
+      }
     }
 
     // ==========================================
@@ -285,48 +304,55 @@
     }
 
     // ==========================================
-    // 4. MAIN DETECTION LOOP
+    // 4. MAIN DETECTION LOOP (PROTECTED)
     // ==========================================
     async function detectFrame() {
-      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-      }
+      // Only run detection if camera is fully active and outputting dimensions
+      if (!isSwitchingCamera && video.readyState === 4 && video.videoWidth > 0 && video.videoHeight > 0) {
+        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        }
 
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      handleAutoTorch();
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        handleAutoTorch();
 
-      if (model) {
-        const predictions = await model.detect(video);
-        drawRadar(predictions);
+        if (model) {
+          try {
+            const predictions = await model.detect(video);
+            drawRadar(predictions);
 
-        predictions.forEach(prediction => {
-          if (prediction.class === 'person' && prediction.score > 0.4) {
-            const [x, y, width, height] = prediction.bbox;
+            predictions.forEach(prediction => {
+              if (prediction.class === 'person' && prediction.score > 0.4) {
+                const [x, y, width, height] = prediction.bbox;
 
-            ctx.strokeStyle = '#00ffcc';
-            ctx.lineWidth = 4;
-            ctx.shadowColor = '#00ffcc';
-            ctx.shadowBlur = 10;
-            ctx.strokeRect(x, y, width, height);
+                ctx.strokeStyle = '#00ffcc';
+                ctx.lineWidth = 4;
+                ctx.shadowColor = '#00ffcc';
+                ctx.shadowBlur = 10;
+                ctx.strokeRect(x, y, width, height);
 
-            ctx.fillStyle = '#00ffcc';
-            ctx.shadowBlur = 0;
-            const text = `HUMAN (${Math.round(prediction.score * 100)}%)`;
-            ctx.font = '16px sans-serif';
-            ctx.fillRect(x, y > 25 ? y - 25 : y, ctx.measureText(text).width + 10, 22);
+                ctx.fillStyle = '#00ffcc';
+                ctx.shadowBlur = 0;
+                const text = `HUMAN (${Math.round(prediction.score * 100)}%)`;
+                ctx.font = '16px sans-serif';
+                ctx.fillRect(x, y > 25 ? y - 25 : y, ctx.measureText(text).width + 10, 22);
 
-            ctx.fillStyle = '#000000';
-            ctx.fillText(text, x + 5, y > 25 ? y - 8 : y + 16);
+                ctx.fillStyle = '#000000';
+                ctx.fillText(text, x + 5, y > 25 ? y - 8 : y + 16);
+              }
+            });
+          } catch(err) {
+            console.warn("Frame detection skipped during transition", err);
           }
-        });
+        }
       }
 
       requestAnimationFrame(detectFrame);
     }
 
     // ==========================================
-    // 5. GPS & RECORDING RESTORED
+    // 5. GPS & RECORDING
     // ==========================================
     function initGPS() {
       if (!("geolocation" in navigator)) return;
@@ -380,7 +406,7 @@
     });
 
     // ==========================================
-    // 6. START APP
+    // 6. INIT APP
     // ==========================================
     async function init() {
       try {
@@ -392,7 +418,7 @@
         torchStatusText.innerText = 'Loading AI...';
         model = await cocoSsd.load();
         
-        if(isTorchOn === false && torchStatusText.innerText !== '🔦 Torch: No Hardware') {
+        if (!isTorchOn && torchStatusText.innerText !== '🔦 Torch: N/A') {
           torchStatusText.innerText = 'System Active';
         }
         recordBtn.disabled = false;
