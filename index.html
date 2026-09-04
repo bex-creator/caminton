@@ -7,8 +7,8 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   
-  <link rel="manifest" href="/caminton/manifest.json" />
-  <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/861/861506.png" />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="apple-touch-icon" href="./icon.png" />
   
   <title>Human Tracker Pro</title>
   
@@ -26,19 +26,20 @@
     
     #controls {
       position: absolute; top: 15px; z-index: 10;
-      display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center;
+      display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: center;
       width: 100%; padding: 0 10px;
     }
     
     .btn {
       background: #ff3366; color: white; border: none;
-      padding: 8px 14px; border-radius: 20px; font-size: 13px;
+      padding: 8px 12px; border-radius: 20px; font-size: 12px;
       font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 4px;
       box-shadow: 0 2px 5px rgba(0,0,0,0.5);
     }
     .btn-secondary { background: #3399ff; }
     .btn-dark { background: #333333; }
     .btn-gyro { background: #9933ff; }
+    .btn-nvg { background: #00ff66; color: #000; }
     .btn:disabled { background: #555555; cursor: not-allowed; color: #999; }
     .btn.recording { background: #ff0000; animation: pulse 1.5s infinite; }
     .btn.torch-on { background: #ffcc00; color: #000; }
@@ -86,10 +87,11 @@
 <body>
 
   <div id="controls">
-    <button id="switchLensBtn" class="btn btn-secondary">🔄 Switch</button>
-    <button id="sensorBtn" class="btn btn-gyro">🧭 Sensors</button>
+    <button id="switchLensBtn" class="btn btn-secondary">🔄 Lens</button>
+    <button id="sensorBtn" class="btn btn-gyro">🧭 Gyro</button>
+    <button id="filterBtn" class="btn btn-nvg">🟢 Mode: OFF</button>
     <button id="torchBtn" class="btn btn-dark" disabled>🔦 N/A</button>
-    <button id="recordBtn" class="btn" disabled>🔴 Record</button>
+    <button id="recordBtn" class="btn" disabled>🔴 Rec</button>
   </div>
 
   <div class="container">
@@ -118,6 +120,7 @@
     const torchBtn = document.getElementById('torchBtn');
     const recordBtn = document.getElementById('recordBtn');
     const sensorBtn = document.getElementById('sensorBtn');
+    const filterBtn = document.getElementById('filterBtn');
     
     let model;
     let videoTrack;
@@ -136,10 +139,29 @@
     let deviceBeta = 0;  
     let deviceGamma = 0; 
 
-    // UPDATED SERVICE WORKER PATH FOR GITHUB PAGES
+    // Filter Modes: 0 = Normal, 1 = NVG Green Phosphor, 2 = Thermal Simulator
+    let filterMode = 0;
+
+    filterBtn.addEventListener('click', () => {
+      filterMode = (filterMode + 1) % 3;
+      if (filterMode === 0) {
+        filterBtn.innerText = '🟢 Mode: OFF';
+        filterBtn.style.background = '#00ff66';
+        filterBtn.style.color = '#000';
+      } else if (filterMode === 1) {
+        filterBtn.innerText = '🌙 Mode: NVG';
+        filterBtn.style.background = '#33ff33';
+        filterBtn.style.color = '#000';
+      } else if (filterMode === 2) {
+        filterBtn.innerText = '🔥 Mode: FLIR';
+        filterBtn.style.background = '#ff0033';
+        filterBtn.style.color = '#fff';
+      }
+    });
+
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/caminton/sw.js')
+        navigator.serviceWorker.register('./sw.js')
           .then(reg => console.log('Service Worker Registered'))
           .catch(err => console.error('Service Worker Error', err));
       });
@@ -164,7 +186,7 @@
         deviceGamma = event.gamma || 0;
       });
       sensorsEnabled = true;
-      sensorBtn.innerText = '🧭 Sensors: ON';
+      sensorBtn.innerText = '🧭 Gyro: ON';
       sensorBtn.classList.add('gyro-on');
     }
 
@@ -251,6 +273,42 @@
         }
       } catch (err) { console.error(err); }
     });
+
+    function applyNightVisionShader() {
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imgData.data;
+      
+      if (filterMode === 1) { // Green Phosphor NVG
+        for (let i = 0; i < data.length; i += 4) {
+          // Convert to relative luminance
+          let lum = (data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114);
+          // Amplify light gain (Digital Gain)
+          lum = Math.min(255, lum * 2.2); 
+          
+          data[i]     = lum * 0.1;  // Low Red
+          data[i + 1] = lum;        // High Green Phosphor
+          data[i + 2] = lum * 0.2;  // Low Blue
+        }
+      } else if (filterMode === 2) { // False-Color Thermal (FLIR)
+        for (let i = 0; i < data.length; i += 4) {
+          let lum = (data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114);
+          lum = Math.min(255, lum * 1.5);
+          
+          // Map luminance to thermal ironbow palette
+          if (lum < 64) {
+            data[i] = 0; data[i+1] = 0; data[i+2] = lum * 4; // Dark blue
+          } else if (lum < 128) {
+            data[i] = (lum - 64) * 4; data[i+1] = 0; data[i+2] = 255 - (lum - 64) * 4; // Purple to Red
+          } else if (lum < 192) {
+            data[i] = 255; data[i+1] = (lum - 128) * 4; data[i+2] = 0; // Red to Yellow
+          } else {
+            data[i] = 255; data[i+1] = 255; data[i+2] = (lum - 192) * 4; // Yellow to White
+          }
+        }
+      }
+      
+      ctx.putImageData(imgData, 0, 0);
+    }
 
     let sweepAngle = 0;
     const MAX_RADAR_DISTANCE_METERS = 10; 
@@ -376,6 +434,12 @@
         }
 
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // Apply Pixel Shader if NVG/FLIR is active
+        if (filterMode > 0) {
+          applyNightVisionShader();
+        }
+
         drawTacticalHUD();
 
         if (model) {
@@ -450,7 +514,7 @@
       } else {
         mediaRecorder.stop();
         isRecording = false;
-        recordBtn.innerText = '🔴 Record';
+        recordBtn.innerText = '🔴 Rec';
         recordBtn.classList.remove('recording');
       }
     });
