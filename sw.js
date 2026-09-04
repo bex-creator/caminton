@@ -1,10 +1,9 @@
-const CACHE_NAME = 'tracker-pro-v1';
+const CACHE_NAME = 'tracker-pro-v3';
 const urlsToCache = [
-  './index.html',
-  './manifest.json'
+  '/caminton/index.html',
+  '/caminton/manifest.json'
 ];
 
-// Install the service worker
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(cache => {
@@ -13,7 +12,6 @@ self.addEventListener('install', event => {
   );
 });
 
-// Fetch resources
 self.addEventListener('fetch', event => {
   event.respondWith(
     caches.match(event.request).then(response => {
