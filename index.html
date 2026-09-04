@@ -3,122 +3,51 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Human Tracker with Recording & Playback</title>
+  <title>Human Tracker with Auto-Torch</title>
   <style>
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      background-color: #121212;
-      color: #ffffff;
-      font-family: sans-serif;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
+      background-color: #121212; color: #ffffff;
+      font-family: sans-serif; overflow: hidden;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center; height: 100vh;
     }
     
-    /* Top Bar Controls */
     #controls {
-      position: absolute;
-      top: 15px;
-      z-index: 10;
-      display: flex;
-      gap: 10px;
-      align-items: center;
+      position: absolute; top: 15px; z-index: 10;
+      display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center;
     }
-    #status {
-      background: rgba(0, 0, 0, 0.7);
-      padding: 8px 16px;
-      border-radius: 20px;
-      font-size: 14px;
-      border: 1px solid #333;
+    .badge {
+      background: rgba(0, 0, 0, 0.7); padding: 8px 16px;
+      border-radius: 20px; font-size: 14px; border: 1px solid #333;
     }
     .btn {
-      background: #ff3366;
-      color: white;
-      border: none;
-      padding: 8px 16px;
-      border-radius: 20px;
-      font-size: 14px;
-      font-weight: bold;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      transition: background 0.2s ease;
+      background: #ff3366; color: white; border: none;
+      padding: 8px 16px; border-radius: 20px; font-size: 14px;
+      font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 6px;
     }
-    .btn:disabled {
-      background: #555555;
-      cursor: not-allowed;
-    }
-    .btn.recording {
-      background: #ff0000;
-      animation: pulse 1.5s infinite;
-    }
-    @keyframes pulse {
-      0% { opacity: 1; }
-      50% { opacity: 0.5; }
-      100% { opacity: 1; }
-    }
+    .btn:disabled { background: #555555; cursor: not-allowed; }
+    .btn.recording { background: #ff0000; animation: pulse 1.5s infinite; }
+    
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
 
-    /* Main Display */
     .container {
-      position: relative;
-      width: 100vw;
-      height: 100vh;
-      display: flex;
-      justify-content: center;
-      align-items: center;
+      position: relative; width: 100vw; height: 100vh;
+      display: flex; justify-content: center; align-items: center;
     }
-    video#webcam {
-      display: none; /* Hidden - rendered directly into canvas for unified recording */
-    }
-    canvas#output {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-    }
+    video#webcam { display: none; }
+    canvas#output { width: 100%; height: 100%; object-fit: cover; }
 
     /* Playback Modal */
     #playbackModal {
-      display: none;
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100vw;
-      height: 100vh;
-      background: rgba(0, 0, 0, 0.9);
-      z-index: 20;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 15px;
-      padding: 20px;
+      display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+      background: rgba(0, 0, 0, 0.9); z-index: 20; flex-direction: column;
+      align-items: center; justify-content: center; gap: 15px; padding: 20px;
     }
-    #recordedVideo {
-      max-width: 90%;
-      max-height: 70vh;
-      border-radius: 10px;
-      border: 2px solid #00ffcc;
-    }
-    .modal-actions {
-      display: flex;
-      gap: 15px;
-    }
-    .btn-secondary {
-      background: #00ffcc;
-      color: #000;
-      text-decoration: none;
-    }
-    .btn-close {
-      background: #444;
-      color: #fff;
-    }
+    #recordedVideo { max-width: 90%; max-height: 70vh; border-radius: 10px; border: 2px solid #00ffcc; }
+    .modal-actions { display: flex; gap: 15px; }
+    .btn-secondary { background: #00ffcc; color: #000; text-decoration: none; padding: 8px 16px; border-radius: 20px; font-weight:bold; cursor: pointer;}
+    .btn-close { background: #444; color: #fff; padding: 8px 16px; border-radius: 20px; border: none; font-weight:bold; cursor: pointer;}
   </style>
 
   <!-- TensorFlow.js and COCO-SSD -->
@@ -128,7 +57,8 @@
 <body>
 
   <div id="controls">
-    <div id="status">Loading Vision AI...</div>
+    <div id="status" class="badge">Loading Vision AI...</div>
+    <div id="torchStatus" class="badge">🔦 Auto-Torch: OFF</div>
     <button id="recordBtn" class="btn" disabled>🔴 Record</button>
   </div>
 
@@ -137,13 +67,12 @@
     <canvas id="output"></canvas>
   </div>
 
-  <!-- Playback Overlay Modal -->
   <div id="playbackModal">
     <h2>Playback Recording</h2>
     <video id="recordedVideo" controls></video>
     <div class="modal-actions">
-      <a id="downloadBtn" class="btn btn-secondary" download="human-tracking.webm">Download Video</a>
-      <button id="closeModalBtn" class="btn btn-close">Close</button>
+      <a id="downloadBtn" class="btn-secondary" download="human-tracking.webm">Download Video</a>
+      <button id="closeModalBtn" class="btn-close">Close</button>
     </div>
   </div>
 
@@ -152,14 +81,21 @@
     const canvas = document.getElementById('output');
     const ctx = canvas.getContext('2d');
     const statusText = document.getElementById('status');
+    const torchStatusText = document.getElementById('torchStatus');
     const recordBtn = document.getElementById('recordBtn');
     
+    // Playback variables
     const playbackModal = document.getElementById('playbackModal');
     const recordedVideo = document.getElementById('recordedVideo');
     const downloadBtn = document.getElementById('downloadBtn');
     const closeModalBtn = document.getElementById('closeModalBtn');
 
     let model;
+    let videoTrack;
+    let isTorchOn = false;
+    let lastBrightnessCheck = 0;
+    
+    // Recording variables
     let mediaRecorder;
     let recordedChunks = [];
     let isRecording = false;
@@ -174,6 +110,7 @@
       try {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         video.srcObject = stream;
+        videoTrack = stream.getVideoTracks()[0]; // Save track to control flashlight
         return new Promise((resolve) => {
           video.onloadedmetadata = () => resolve(video);
         });
@@ -183,7 +120,59 @@
       }
     }
 
-    // 2. Continuous Frame Processing & Detection
+    // 2. Auto-Flashlight Logic
+    async function handleAutoTorch() {
+      // Check twice a second to save performance
+      const now = Date.now();
+      if (now - lastBrightnessCheck < 500) return;
+      lastBrightnessCheck = now;
+
+      // Ensure the browser and hardware actually support the torch feature
+      if (!videoTrack) return;
+      const capabilities = videoTrack.getCapabilities && videoTrack.getCapabilities();
+      if (!capabilities || !capabilities.torch) {
+        torchStatusText.innerText = '🔦 Torch Not Supported';
+        return;
+      }
+
+      // Sample a grid of pixels to calculate average brightness
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let totalLuminance = 0;
+      let samples = 0;
+      
+      // Sample every 400th pixel for speed
+      for (let i = 0; i < imageData.length; i += 400) {
+        const r = imageData[i];
+        const g = imageData[i+1];
+        const b = imageData[i+2];
+        // Standard formula to convert RGB to human-perceived luminance (0 to 255)
+        const luminance = 0.299 * r + 0.587 * g + 0.114 * b; 
+        totalLuminance += luminance;
+        samples++;
+      }
+      
+      const avgBrightness = totalLuminance / samples;
+      
+      // Thresholds: Turn on if darker than 40, turn off if brighter than 80
+      // (The gap prevents the light from flickering on and off repeatedly)
+      try {
+        if (avgBrightness < 40 && !isTorchOn) {
+          await videoTrack.applyConstraints({ advanced: [{ torch: true }] });
+          isTorchOn = true;
+          torchStatusText.innerText = '🔦 Auto-Torch: ON';
+          torchStatusText.style.borderColor = '#ffcc00';
+        } else if (avgBrightness > 80 && isTorchOn) {
+          await videoTrack.applyConstraints({ advanced: [{ torch: false }] });
+          isTorchOn = false;
+          torchStatusText.innerText = '🔦 Auto-Torch: OFF';
+          torchStatusText.style.borderColor = '#333';
+        }
+      } catch (err) {
+        console.error('Failed to toggle torch', err);
+      }
+    }
+
+    // 3. Continuous Frame Processing & Detection
     async function detectFrame() {
       if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
         canvas.width = video.videoWidth;
@@ -192,12 +181,14 @@
 
       // Draw camera frame directly to canvas
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      
+      // Check brightness and adjust flashlight
+      handleAutoTorch();
 
       // Perform AI Detection
       if (model) {
         const predictions = await model.detect(video);
 
-        // Overlay human detection boxes
         predictions.forEach(prediction => {
           if (prediction.class === 'person' && prediction.score > 0.4) {
             const [x, y, width, height] = prediction.bbox;
@@ -227,37 +218,25 @@
       requestAnimationFrame(detectFrame);
     }
 
-    // 3. Recording Functions
+    // 4. Recording Functions
     function toggleRecording() {
-      if (!isRecording) {
-        startRecording();
-      } else {
-        stopRecording();
-      }
+      if (!isRecording) startRecording();
+      else stopRecording();
     }
 
     function startRecording() {
       recordedChunks = [];
-      
-      // Capture combined canvas stream at 30 FPS
       const canvasStream = canvas.captureStream(30);
-
-      // Choose supported video format
+      
       let options = {};
-      if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
-        options = { mimeType: 'video/webm;codecs=vp9' };
-      } else if (MediaRecorder.isTypeSupported('video/webm')) {
-        options = { mimeType: 'video/webm' };
-      } else if (MediaRecorder.isTypeSupported('video/mp4')) {
-        options = { mimeType: 'video/mp4' };
-      }
+      if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) options = { mimeType: 'video/webm;codecs=vp9' };
+      else if (MediaRecorder.isTypeSupported('video/webm')) options = { mimeType: 'video/webm' };
+      else if (MediaRecorder.isTypeSupported('video/mp4')) options = { mimeType: 'video/mp4' };
 
       mediaRecorder = new MediaRecorder(canvasStream, options);
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          recordedChunks.push(event.data);
-        }
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recordedChunks.push(e.data);
       };
 
       mediaRecorder.onstop = () => {
@@ -265,13 +244,10 @@
         const blob = new Blob(recordedChunks, { type: mimeType });
         const videoURL = URL.createObjectURL(blob);
         
-        // Load into Playback Modal
         recordedVideo.src = videoURL;
         downloadBtn.href = videoURL;
-        
         const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
         downloadBtn.download = `human-tracking-${Date.now()}.${ext}`;
-
         playbackModal.style.display = 'flex';
       };
 
@@ -290,7 +266,6 @@
       }
     }
 
-    // 4. Modal Controls
     closeModalBtn.addEventListener('click', () => {
       playbackModal.style.display = 'none';
       recordedVideo.pause();
@@ -303,8 +278,6 @@
       try {
         await setupCamera();
         video.play();
-        
-        // Start rendering frames immediately
         detectFrame();
 
         statusText.innerText = 'Loading AI Model...';
