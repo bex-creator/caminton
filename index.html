@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Human Tracker Pro</title>
+  <title>Human Tracker Pro - Gyro Edition</title>
   
   <!-- Leaflet CSS for GPS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -31,9 +31,11 @@
     }
     .btn-secondary { background: #3399ff; }
     .btn-dark { background: #333333; }
+    .btn-gyro { background: #9933ff; }
     .btn:disabled { background: #555555; cursor: not-allowed; color: #999; }
     .btn.recording { background: #ff0000; animation: pulse 1.5s infinite; }
     .btn.torch-on { background: #ffcc00; color: #000; }
+    .btn.gyro-on { background: #00ffcc; color: #000; }
     
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
 
@@ -81,7 +83,8 @@
 
   <div id="controls">
     <button id="switchLensBtn" class="btn btn-secondary">🔄 Switch</button>
-    <button id="torchBtn" class="btn btn-dark" disabled>🔦 Loading...</button>
+    <button id="sensorBtn" class="btn btn-gyro">🧭 Sensors</button>
+    <button id="torchBtn" class="btn btn-dark" disabled>🔦 N/A</button>
     <button id="recordBtn" class="btn" disabled>🔴 Record</button>
   </div>
 
@@ -110,6 +113,7 @@
     const radarCtx = radar.getContext('2d');
     const torchBtn = document.getElementById('torchBtn');
     const recordBtn = document.getElementById('recordBtn');
+    const sensorBtn = document.getElementById('sensorBtn');
     
     let model;
     let videoTrack;
@@ -117,35 +121,65 @@
     let currentDeviceIndex = 0;
     let isTorchOn = false;
     let isSwitchingCamera = false;
-    let wakeLock = null; // Variable to hold the screen wake lock
+    let wakeLock = null;
 
     let mediaRecorder;
     let recordedChunks = [];
     let isRecording = false;
 
+    // Gyroscope & Compass Data
+    let sensorsEnabled = false;
+    let deviceAlpha = 0; // Compass Heading (0-360)
+    let deviceBeta = 0;  // Pitch (Front-to-back tilt)
+    let deviceGamma = 0; // Roll (Left-to-right tilt)
+
     // ==========================================
-    // 0. KEEP SCREEN AWAKE (WAKE LOCK API)
+    // 0. SENSORS (GYRO & COMPASS)
     // ==========================================
+    sensorBtn.addEventListener('click', async () => {
+      // iOS 13+ requires explicit permission via user interaction
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        try {
+          const permission = await DeviceOrientationEvent.requestPermission();
+          if (permission === 'granted') {
+            enableSensors();
+          } else {
+            alert("Permission denied to access device sensors.");
+          }
+        } catch (err) {
+          console.error("Sensor permission error:", err);
+        }
+      } else {
+        // Android / Non-iOS 13+ handles it without explicit promise request
+        enableSensors();
+      }
+    });
+
+    function enableSensors() {
+      window.addEventListener('deviceorientation', (event) => {
+        // Prefer webkitCompassHeading for true north on iOS, fallback to alpha
+        deviceAlpha = event.webkitCompassHeading || event.alpha || 0;
+        deviceBeta = event.beta || 0;
+        deviceGamma = event.gamma || 0;
+      });
+      sensorsEnabled = true;
+      sensorBtn.innerText = '🧭 Sensors: ON';
+      sensorBtn.classList.add('gyro-on');
+    }
+
     async function requestWakeLock() {
       try {
         if ('wakeLock' in navigator) {
           wakeLock = await navigator.wakeLock.request('screen');
-          console.log('Screen Wake Lock is active');
         }
-      } catch (err) {
-        console.warn(`Wake Lock error: ${err.name}, ${err.message}`);
-      }
+      } catch (err) { console.warn(`Wake Lock error: ${err.message}`); }
     }
-
-    // Re-request wake lock if you minimize the browser and open it back up
     document.addEventListener('visibilitychange', async () => {
-      if (wakeLock !== null && document.visibilityState === 'visible') {
-        await requestWakeLock();
-      }
+      if (wakeLock !== null && document.visibilityState === 'visible') await requestWakeLock();
     });
 
     // ==========================================
-    // 1. STABLE CAMERA SWITCHING
+    // 1. CAMERA LOGIC
     // ==========================================
     async function getCameras() {
       try {
@@ -158,9 +192,7 @@
           d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('environment')
         );
         if (backCameraIndex !== -1) currentDeviceIndex = backCameraIndex;
-      } catch (e) {
-        console.error("Camera enumeration error:", e);
-      }
+      } catch (e) { console.error("Camera enumeration error:", e); }
     }
 
     async function startStream(deviceIndex) {
@@ -173,7 +205,6 @@
       if (video.srcObject) {
         const tracks = video.srcObject.getTracks();
         tracks.forEach(track => track.stop());
-        video.srcObject = null;
       }
       
       try {
@@ -187,12 +218,9 @@
         videoTrack = stream.getVideoTracks()[0];
         
         await new Promise((resolve) => {
-          video.onloadedmetadata = () => {
-            video.play().then(resolve).catch(resolve);
-          };
+          video.onloadedmetadata = () => { video.play().then(resolve).catch(resolve); };
         });
 
-        // Check for torch capability and enable manual button
         setTimeout(() => {
           try {
             const caps = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
@@ -202,16 +230,9 @@
             } else {
               torchBtn.innerText = '🔦 Torch: N/A';
             }
-          } catch(err) {
-            torchBtn.innerText = '🔦 Torch: N/A';
-          }
+          } catch(err) { torchBtn.innerText = '🔦 Torch: N/A'; }
         }, 500);
-
-      } catch (e) {
-        console.error("Camera stream error: ", e);
-      } finally {
-        isSwitchingCamera = false;
-      }
+      } catch (e) { console.error("Camera error: ", e); } finally { isSwitchingCamera = false; }
     }
 
     document.getElementById('switchLensBtn').addEventListener('click', async () => {
@@ -220,15 +241,11 @@
       await startStream(currentDeviceIndex);
     });
 
-    // ==========================================
-    // 2. MANUAL TORCH TOGGLE
-    // ==========================================
     torchBtn.addEventListener('click', async () => {
       if (!videoTrack || isSwitchingCamera) return;
       try {
         isTorchOn = !isTorchOn;
         await videoTrack.applyConstraints({ advanced: [{ torch: isTorchOn }] });
-        
         if (isTorchOn) {
           torchBtn.innerText = '🔦 Torch: ON';
           torchBtn.classList.add('torch-on');
@@ -236,13 +253,11 @@
           torchBtn.innerText = '🔦 Torch: OFF';
           torchBtn.classList.remove('torch-on');
         }
-      } catch (err) {
-        console.error('Manual torch toggle failed', err);
-      }
+      } catch (err) { console.error(err); }
     });
 
     // ==========================================
-    // 3. RADAR MAPPING
+    // 2. RADAR & HUD DRAWING
     // ==========================================
     let sweepAngle = 0;
     const MAX_RADAR_DISTANCE_METERS = 10; 
@@ -251,30 +266,52 @@
     function drawRadar(predictions) {
       const w = radar.width;
       const h = radar.height;
+      const cx = w / 2;
+      const cy = h / 2;
       
       radarCtx.clearRect(0, 0, w, h);
       
+      // Radar Rings
       radarCtx.strokeStyle = 'rgba(0, 255, 204, 0.3)';
       radarCtx.lineWidth = 1;
       for (let i = 1; i <= 3; i++) {
         radarCtx.beginPath();
-        radarCtx.arc(w/2, h/2, (w/2) * (i/3), 0, Math.PI * 2);
+        radarCtx.arc(cx, cy, (w/2) * (i/3), 0, Math.PI * 2);
         radarCtx.stroke();
       }
+
+      // Compass Heading Indicator on Radar (Draws an 'N' where North is)
+      if (sensorsEnabled) {
+        // Adjust for phone orientation: standard alpha is 0 at North.
+        // We subtract 90 deg (PI/2) because Canvas 0 is at 3 o'clock.
+        const northAngle = (270 - deviceAlpha) * (Math.PI / 180); 
+        const nX = cx + Math.cos(northAngle) * (cx - 15);
+        const nY = cy + Math.sin(northAngle) * (cy - 15);
+        
+        radarCtx.fillStyle = '#9933ff';
+        radarCtx.font = 'bold 14px sans-serif';
+        radarCtx.textAlign = 'center';
+        radarCtx.textBaseline = 'middle';
+        radarCtx.fillText('N', nX, nY);
+      }
       
+      // Crosshairs
       radarCtx.beginPath();
-      radarCtx.moveTo(w/2, 0); radarCtx.lineTo(w/2, h);
-      radarCtx.moveTo(0, h/2); radarCtx.lineTo(w, h/2);
+      radarCtx.moveTo(cx, 0); radarCtx.lineTo(cx, h);
+      radarCtx.moveTo(0, cy); radarCtx.lineTo(w, cy);
+      radarCtx.strokeStyle = 'rgba(0, 255, 204, 0.3)';
       radarCtx.stroke();
 
+      // Sweeper
       sweepAngle = (sweepAngle + 0.05) % (Math.PI * 2);
       radarCtx.beginPath();
-      radarCtx.moveTo(w/2, h/2);
-      radarCtx.lineTo(w/2 + Math.cos(sweepAngle) * w/2, h/2 + Math.sin(sweepAngle) * h/2);
+      radarCtx.moveTo(cx, cy);
+      radarCtx.lineTo(cx + Math.cos(sweepAngle) * cx, cy + Math.sin(sweepAngle) * cy);
       radarCtx.strokeStyle = 'rgba(0, 255, 204, 0.8)';
       radarCtx.lineWidth = 2;
       radarCtx.stroke();
 
+      // Plot Humans
       predictions.forEach(p => {
         if (p.class === 'person' && p.score > 0.4) {
           const [boxX, boxY, boxWidth, boxHeight] = p.bbox;
@@ -283,11 +320,11 @@
           if (distance > MAX_RADAR_DISTANCE_METERS) distance = MAX_RADAR_DISTANCE_METERS;
 
           const offsetX = (boxX + boxWidth / 2) - (canvas.width / 2);
-          const angle = Math.atan2(offsetX, focalLength);
+          const angle = Math.atan2(offsetX, focalLength) - (Math.PI / 2); // Rotate to start at top
 
           const pixelsPerMeter = (h / 2) / MAX_RADAR_DISTANCE_METERS;
-          const plotX = (w / 2) + (Math.sin(angle) * (distance * pixelsPerMeter));
-          const plotY = (h - 10) - (Math.cos(angle) * (distance * pixelsPerMeter));
+          const plotX = cx + (Math.cos(angle) * (distance * pixelsPerMeter));
+          const plotY = cy + (Math.sin(angle) * (distance * pixelsPerMeter));
 
           radarCtx.beginPath();
           radarCtx.arc(plotX, plotY, 6, 0, Math.PI * 2);
@@ -298,14 +335,61 @@
           
           radarCtx.fillStyle = '#ffffff';
           radarCtx.font = '10px sans-serif';
+          radarCtx.textAlign = 'left';
           radarCtx.shadowBlur = 0;
           radarCtx.fillText(`${distance.toFixed(1)}m`, plotX + 8, plotY + 4);
         }
       });
     }
 
+    function drawTacticalHUD() {
+      if (!sensorsEnabled) return;
+      
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+
+      ctx.save();
+      ctx.fillStyle = '#00ffcc';
+      ctx.font = '16px monospace';
+      ctx.shadowColor = '#000';
+      ctx.shadowBlur = 4;
+      
+      // Top Left Stats (Pitch, Roll, Heading)
+      ctx.fillText(`HDG: ${Math.round(deviceAlpha).toString().padStart(3, '0')}°`, 20, 80);
+      ctx.fillText(`PIT: ${Math.round(deviceBeta)}°`, 20, 105);
+      ctx.fillText(`ROL: ${Math.round(deviceGamma)}°`, 20, 130);
+
+      // Moving Crosshair / Artificial Horizon
+      // Shift crosshair based on how you tilt the phone
+      const pitchOffset = (deviceBeta / 90) * (canvas.height / 2);
+      let rollOffset = (deviceGamma / 90) * (canvas.width / 2);
+      
+      // Clamp values so it doesn't leave the screen entirely
+      const crossX = Math.max(50, Math.min(canvas.width - 50, cx + rollOffset));
+      const crossY = Math.max(50, Math.min(canvas.height - 50, cy + pitchOffset));
+
+      ctx.strokeStyle = 'rgba(153, 51, 255, 0.8)'; // Purple to match gyro button
+      ctx.lineWidth = 2;
+      
+      // Draw dynamic crosshair
+      ctx.beginPath();
+      ctx.moveTo(crossX - 30, crossY); ctx.lineTo(crossX - 10, crossY);
+      ctx.moveTo(crossX + 10, crossY); ctx.lineTo(crossX + 30, crossY);
+      ctx.moveTo(crossX, crossY - 30); ctx.lineTo(crossX, crossY - 10);
+      ctx.moveTo(crossX, crossY + 10); ctx.lineTo(crossX, crossY + 30);
+      ctx.stroke();
+
+      // Center fixed reticle
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, 5, 0, Math.PI*2);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
     // ==========================================
-    // 4. MAIN DETECTION LOOP
+    // 3. MAIN DETECTION LOOP
     // ==========================================
     async function detectFrame() {
       if (!isSwitchingCamera && video.readyState === 4 && video.videoWidth > 0 && video.videoHeight > 0) {
@@ -315,6 +399,9 @@
         }
 
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // Draw HUD underneath bounding boxes
+        drawTacticalHUD();
 
         if (model) {
           try {
@@ -341,16 +428,14 @@
                 ctx.fillText(text, x + 5, y > 25 ? y - 8 : y + 16);
               }
             });
-          } catch(err) {
-            console.warn("Detection skipped", err);
-          }
+          } catch(err) { console.warn("Detection skipped", err); }
         }
       }
       requestAnimationFrame(detectFrame);
     }
 
     // ==========================================
-    // 5. GPS & RECORDING
+    // 4. GPS & RECORDING
     // ==========================================
     function initGPS() {
       if (!("geolocation" in navigator)) return;
@@ -404,11 +489,11 @@
     });
 
     // ==========================================
-    // 6. INIT APP
+    // 5. INIT APP
     // ==========================================
     async function init() {
       try {
-        await requestWakeLock(); // Request screen to stay awake
+        await requestWakeLock();
         initGPS();
         await getCameras();
         if (videoDevices.length > 0) await startStream(currentDeviceIndex);
@@ -416,9 +501,7 @@
         detectFrame();
         model = await cocoSsd.load();
         recordBtn.disabled = false;
-      } catch (err) {
-        console.error('Init Failed', err);
-      }
+      } catch (err) { console.error('Init Failed', err); }
     }
 
     init();
