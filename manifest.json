@@ -1,7 +1,7 @@
 {
   "name": "Human Tracker Pro",
   "short_name": "Tracker Pro",
-  "start_url": ".",
+  "start_url": "/caminton/index.html",
   "display": "standalone",
   "background_color": "#121212",
   "theme_color": "#121212",
