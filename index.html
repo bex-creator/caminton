@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Human Tracker Web App</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background-color: #121212;
+      color: #ffffff;
+      font-family: sans-serif;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+    #status {
+      position: absolute;
+      top: 15px;
+      z-index: 10;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 14px;
+      border: 1px solid #333;
+    }
+    .container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    video, canvas {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+</head>
+<body>
+
+  <div id="status">Loading Vision AI Model...</div>
+
+  <div class="container">
+    <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="output"></canvas>
+  </div>
+
+  <script>
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('output');
+    const ctx = canvas.getContext('2d');
+    const statusText = document.getElementById('status');
+
+    let model;
+
+    // 1. Setup device camera (uses rear camera on smartphones)
+    async function setupCamera() {
+      const constraints = {
+        video: {
+          facingMode: 'environment', // Prefer back camera on mobile
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      };
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = stream;
+        return new Promise((resolve) => {
+          video.onloadedmetadata = () => {
+            resolve(video);
+          };
+        });
+      } catch (err) {
+        statusText.innerText = 'Camera access denied or unavailable.';
+        console.error(err);
+      }
+    }
+
+    // 2. Continuous detection loop
+    async function detectFrame() {
+      // Resize canvas to match video stream dimensions
+      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+      }
+
+      // Perform object detection
+      const predictions = await model.detect(video);
+
+      // Clear previous overlay
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Filter and draw highlights for humans only
+      predictions.forEach(prediction => {
+        if (prediction.class === 'person' && prediction.score > 0.4) {
+          const [x, y, width, height] = prediction.bbox;
+
+          // Draw neon bounding box
+          ctx.strokeStyle = '#00ffcc';
+          ctx.lineWidth = 4;
+          ctx.shadowColor = '#00ffcc';
+          ctx.shadowBlur = 10;
+          ctx.strokeRect(x, y, width, height);
+
+          // Draw label background
+          ctx.fillStyle = '#00ffcc';
+          ctx.shadowBlur = 0;
+          const text = `HUMAN (${Math.round(prediction.score * 100)}%)`;
+          ctx.font = '16px sans-serif';
+          const textWidth = ctx.measureText(text).width;
+          ctx.fillRect(x, y > 25 ? y - 25 : y, textWidth + 10, 22);
+
+          // Draw label text
+          ctx.fillStyle = '#000000';
+          ctx.fillText(text, x + 5, y > 25 ? y - 8 : y + 16);
+        }
+      });
+
+      // Request next frame
+      requestAnimationFrame(detectFrame);
+    }
+
+    // 3. Initialize the app
+    async function init() {
+      try {
+        await setupCamera();
+        video.play();
+        
+        statusText.innerText = 'Loading AI Model...';
+        model = await cocoSsd.load();
+        
+        statusText.innerText = 'Tracking Active';
+        statusText.style.borderColor = '#00ffcc';
+        
+        detectFrame();
+      } catch (err) {
+        statusText.innerText = 'Failed to load model.';
+        console.error(err);
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
