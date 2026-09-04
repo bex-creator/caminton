@@ -22,18 +22,18 @@
       display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center;
       width: 100%; padding: 0 10px;
     }
-    .badge {
-      background: rgba(0, 0, 0, 0.7); padding: 8px 12px;
-      border-radius: 20px; font-size: 13px; border: 1px solid #333;
-    }
+    
     .btn {
       background: #ff3366; color: white; border: none;
       padding: 8px 14px; border-radius: 20px; font-size: 13px;
       font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 4px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.5);
     }
     .btn-secondary { background: #3399ff; }
-    .btn:disabled { background: #555555; cursor: not-allowed; }
+    .btn-dark { background: #333333; }
+    .btn:disabled { background: #555555; cursor: not-allowed; color: #999; }
     .btn.recording { background: #ff0000; animation: pulse 1.5s infinite; }
+    .btn.torch-on { background: #ffcc00; color: #000; }
     
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
 
@@ -80,8 +80,8 @@
 <body>
 
   <div id="controls">
-    <button id="switchLensBtn" class="btn btn-secondary">🔄 Switch Lens</button>
-    <div id="torchStatus" class="badge">🔦 Torch: OFF</div>
+    <button id="switchLensBtn" class="btn btn-secondary">🔄 Switch</button>
+    <button id="torchBtn" class="btn btn-dark" disabled>🔦 Loading...</button>
     <button id="recordBtn" class="btn" disabled>🔴 Record</button>
   </div>
 
@@ -108,7 +108,7 @@
     const ctx = canvas.getContext('2d');
     const radar = document.getElementById('radarCanvas');
     const radarCtx = radar.getContext('2d');
-    const torchStatusText = document.getElementById('torchStatus');
+    const torchBtn = document.getElementById('torchBtn');
     const recordBtn = document.getElementById('recordBtn');
     
     let model;
@@ -116,12 +116,33 @@
     let videoDevices = [];
     let currentDeviceIndex = 0;
     let isTorchOn = false;
-    let lastBrightnessCheck = 0;
-    let isSwitchingCamera = false; // Safety lock flag
+    let isSwitchingCamera = false;
+    let wakeLock = null; // Variable to hold the screen wake lock
 
     let mediaRecorder;
     let recordedChunks = [];
     let isRecording = false;
+
+    // ==========================================
+    // 0. KEEP SCREEN AWAKE (WAKE LOCK API)
+    // ==========================================
+    async function requestWakeLock() {
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLock = await navigator.wakeLock.request('screen');
+          console.log('Screen Wake Lock is active');
+        }
+      } catch (err) {
+        console.warn(`Wake Lock error: ${err.name}, ${err.message}`);
+      }
+    }
+
+    // Re-request wake lock if you minimize the browser and open it back up
+    document.addEventListener('visibilitychange', async () => {
+      if (wakeLock !== null && document.visibilityState === 'visible') {
+        await requestWakeLock();
+      }
+    });
 
     // ==========================================
     // 1. STABLE CAMERA SWITCHING
@@ -143,10 +164,12 @@
     }
 
     async function startStream(deviceIndex) {
-      isSwitchingCamera = true; // Lock detection loop during lens swap
+      isSwitchingCamera = true;
       isTorchOn = false;
+      torchBtn.innerText = '🔦 Checking...';
+      torchBtn.disabled = true;
+      torchBtn.classList.remove('torch-on');
 
-      // Fully stop existing stream
       if (video.srcObject) {
         const tracks = video.srcObject.getTracks();
         tracks.forEach(track => track.stop());
@@ -163,34 +186,31 @@
         video.srcObject = stream;
         videoTrack = stream.getVideoTracks()[0];
         
-        // Wait until stream metadata is loaded and video is playing
         await new Promise((resolve) => {
           video.onloadedmetadata = () => {
             video.play().then(resolve).catch(resolve);
           };
         });
 
-        // Check torch capabilities safely
+        // Check for torch capability and enable manual button
         setTimeout(() => {
           try {
             const caps = videoTrack.getCapabilities ? videoTrack.getCapabilities() : {};
             if (caps.torch) {
-              torchStatusText.innerText = '🔦 Torch: READY';
-              torchStatusText.style.borderColor = '#00ffcc';
+              torchBtn.innerText = '🔦 Torch: OFF';
+              torchBtn.disabled = false;
             } else {
-              torchStatusText.innerText = '🔦 Torch: N/A';
-              torchStatusText.style.borderColor = '#333';
+              torchBtn.innerText = '🔦 Torch: N/A';
             }
           } catch(err) {
-            torchStatusText.innerText = '🔦 Torch: N/A';
+            torchBtn.innerText = '🔦 Torch: N/A';
           }
         }, 500);
 
       } catch (e) {
         console.error("Camera stream error: ", e);
-        torchStatusText.innerText = "Switch Failed";
       } finally {
-        isSwitchingCamera = false; // Unlock detection loop
+        isSwitchingCamera = false;
       }
     }
 
@@ -201,41 +221,25 @@
     });
 
     // ==========================================
-    // 2. AUTO TORCH LOGIC
+    // 2. MANUAL TORCH TOGGLE
     // ==========================================
-    async function handleAutoTorch() {
-      const now = Date.now();
-      if (now - lastBrightnessCheck < 500 || !videoTrack || isSwitchingCamera) return;
-      lastBrightnessCheck = now;
-
+    torchBtn.addEventListener('click', async () => {
+      if (!videoTrack || isSwitchingCamera) return;
       try {
-        const capabilities = videoTrack.getCapabilities && videoTrack.getCapabilities();
-        if (!capabilities || !capabilities.torch) return;
-
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-        let totalLuminance = 0, samples = 0;
+        isTorchOn = !isTorchOn;
+        await videoTrack.applyConstraints({ advanced: [{ torch: isTorchOn }] });
         
-        for (let i = 0; i < imageData.length; i += 400) {
-          totalLuminance += (0.299 * imageData[i] + 0.587 * imageData[i+1] + 0.114 * imageData[i+2]);
-          samples++;
-        }
-        const avgBrightness = totalLuminance / samples;
-        
-        if (avgBrightness < 40 && !isTorchOn) {
-          await videoTrack.applyConstraints({ advanced: [{ torch: true }] });
-          isTorchOn = true;
-          torchStatusText.innerText = '🔦 Auto-Torch: ON';
-          torchStatusText.style.borderColor = '#ffcc00';
-        } else if (avgBrightness > 80 && isTorchOn) {
-          await videoTrack.applyConstraints({ advanced: [{ torch: false }] });
-          isTorchOn = false;
-          torchStatusText.innerText = '🔦 Auto-Torch: OFF';
-          torchStatusText.style.borderColor = '#333';
+        if (isTorchOn) {
+          torchBtn.innerText = '🔦 Torch: ON';
+          torchBtn.classList.add('torch-on');
+        } else {
+          torchBtn.innerText = '🔦 Torch: OFF';
+          torchBtn.classList.remove('torch-on');
         }
       } catch (err) {
-        // Torch constraint errors ignored safely when switching back/front
+        console.error('Manual torch toggle failed', err);
       }
-    }
+    });
 
     // ==========================================
     // 3. RADAR MAPPING
@@ -250,7 +254,6 @@
       
       radarCtx.clearRect(0, 0, w, h);
       
-      // Grid Rings
       radarCtx.strokeStyle = 'rgba(0, 255, 204, 0.3)';
       radarCtx.lineWidth = 1;
       for (let i = 1; i <= 3; i++) {
@@ -259,7 +262,6 @@
         radarCtx.stroke();
       }
       
-      // Crosshairs & Sweep
       radarCtx.beginPath();
       radarCtx.moveTo(w/2, 0); radarCtx.lineTo(w/2, h);
       radarCtx.moveTo(0, h/2); radarCtx.lineTo(w, h/2);
@@ -273,7 +275,6 @@
       radarCtx.lineWidth = 2;
       radarCtx.stroke();
 
-      // Plot Humans
       predictions.forEach(p => {
         if (p.class === 'person' && p.score > 0.4) {
           const [boxX, boxY, boxWidth, boxHeight] = p.bbox;
@@ -304,10 +305,9 @@
     }
 
     // ==========================================
-    // 4. MAIN DETECTION LOOP (PROTECTED)
+    // 4. MAIN DETECTION LOOP
     // ==========================================
     async function detectFrame() {
-      // Only run detection if camera is fully active and outputting dimensions
       if (!isSwitchingCamera && video.readyState === 4 && video.videoWidth > 0 && video.videoHeight > 0) {
         if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
           canvas.width = video.videoWidth;
@@ -315,7 +315,6 @@
         }
 
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        handleAutoTorch();
 
         if (model) {
           try {
@@ -343,11 +342,10 @@
               }
             });
           } catch(err) {
-            console.warn("Frame detection skipped during transition", err);
+            console.warn("Detection skipped", err);
           }
         }
       }
-
       requestAnimationFrame(detectFrame);
     }
 
@@ -410,21 +408,16 @@
     // ==========================================
     async function init() {
       try {
+        await requestWakeLock(); // Request screen to stay awake
         initGPS();
         await getCameras();
         if (videoDevices.length > 0) await startStream(currentDeviceIndex);
         
         detectFrame();
-        torchStatusText.innerText = 'Loading AI...';
         model = await cocoSsd.load();
-        
-        if (!isTorchOn && torchStatusText.innerText !== '🔦 Torch: N/A') {
-          torchStatusText.innerText = 'System Active';
-        }
         recordBtn.disabled = false;
       } catch (err) {
-        torchStatusText.innerText = 'Init Failed';
-        console.error(err);
+        console.error('Init Failed', err);
       }
     }
 
